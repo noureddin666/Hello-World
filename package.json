@@ -1,0 +1,9 @@
+{
+  "name": "uaw-public-validation-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-reporter=junit"
+  }
+}
