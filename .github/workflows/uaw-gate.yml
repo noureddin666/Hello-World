@@ -1,0 +1,64 @@
+# UAW gate workflow for GitHub (Enterprise). Copy to .github/workflows/uaw-gate.yml.
+# Make "uaw-gate" a required status check through a ruleset / required workflow so it cannot be removed in a PR.
+# Secret: UAW_API_KEY (key of an identity of kind "ci"). Variables: UAW_URL, UAW_PROJECT.
+# Task binding: the PR title starts with the task key ("PAY-42: ..."), else the branch name carries it
+# ("PAY-42/...", "PAY-42-login", "feature/PAY-42-login").
+name: uaw-gate
+on:
+  pull_request:
+    branches: [uaw-pipeline-base]
+    types: [opened, synchronize, reopened, edited]
+permissions:
+  contents: read
+jobs:
+  uaw-gate:
+    runs-on: [uaw-rehearsal-20261025]
+    timeout-minutes: 10
+    env:
+      UAW_URL: ${{ vars.UAW_URL }}
+      UAW_PROJECT: ${{ vars.UAW_PROJECT }}
+      UAW_API_KEY: ${{ secrets.UAW_API_KEY }}
+      UAW_MR: ${{ github.repository }}#${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BRANCH: ${{ github.head_ref }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_BRANCH: ${{ github.base_ref }}
+    steps:
+      # The default pull_request checkout is the synthetic merge commit (refs/pull/N/merge), a SHA the PR never shows.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          # The target-branch fetch below needs the job token on private repositories (read-only for fork PRs).
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - name: Fetch target branch
+        run: |
+          git fetch --no-tags origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH"
+          test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA" || { echo "::error::HEAD is not the PR head commit $PR_HEAD_SHA"; exit 2; }
+      - name: Bind task
+        run: |
+          task="$(printf '%s\n' "$PR_TITLE" | grep -oE '^[A-Z][A-Z0-9]+-[0-9]+' | head -n 1 || true)"
+          [ -n "$task" ] || task="$(printf '%s\n' "$PR_BRANCH" | grep -oE '(^|/)[A-Z][A-Z0-9]+-[0-9]+' | head -n 1 | tr -d '/' || true)"
+          if [ -z "$task" ]; then
+            echo "::error::task_unbound: start the PR title with the UAW task key (\"PAY-42: ...\") or name the branch PAY-42/... and re-run."
+            exit 5
+          fi
+          echo "UAW_TASK=$task" >> "$GITHUB_ENV"
+      - name: Download UAW connector
+        run: |
+          curl -fsS -H "x-api-key: $UAW_API_KEY" "$UAW_URL/api/uaw/v1/cli" -o "$RUNNER_TEMP/uaw-cli.cjs"
+      - name: Register change
+        run: node "$RUNNER_TEMP/uaw-cli.cjs" change sync --base "origin/$BASE_BRANCH"
+      - name: Verify on the UAW runner
+        run: node "$RUNNER_TEMP/uaw-cli.cjs" verify
+      - name: Gate
+        run: node "$RUNNER_TEMP/uaw-cli.cjs" status
+      - name: Change Passport
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/uaw-cli.cjs" ]; then node "$RUNNER_TEMP/uaw-cli.cjs" passport --out uaw-passport.md || true; fi
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: uaw-passport, path: uaw-passport.md, if-no-files-found: ignore }
