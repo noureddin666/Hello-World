@@ -1,3 +1,5 @@
 export function total(items) {
-  return items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+  let amount = 0
+  for (const item of items) amount += item.price * item.quantity
+  return amount
 }
